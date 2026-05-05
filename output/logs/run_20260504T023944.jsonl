@@ -1,0 +1,14 @@
+{"scraper": "dsire_florida", "name": "DSIRE Florida", "count": 21, "elapsed_s": 0.01}
+{"scraper": "rewiring_america", "name": "Rewiring America (IRA)", "count": 22, "elapsed_s": 0.0}
+{"scraper": "teco", "name": "TECO (Tampa Electric) Rebates", "count": 6, "elapsed_s": 0.2}
+{"scraper": "duke_fl", "name": "Duke Energy Florida Rebates", "count": 6, "elapsed_s": 0.0}
+{"scraper": "msfh", "name": "My Safe Florida Home", "count": 1, "elapsed_s": 0.0}
+{"scraper": "fhfc", "name": "Florida Housing Finance Corp", "count": 7, "elapsed_s": 0.0}
+{"scraper": "hillsborough", "name": "Hillsborough County Affordable Housing", "count": 9, "elapsed_s": 0.0}
+{"scraper": "tampa", "name": "City of Tampa Housing & Community Development", "count": 6, "elapsed_s": 0.0}
+{"scraper": "irs_25c_25d", "name": "IRS 25C / 25D Energy Tax Credits", "count": 2, "elapsed_s": 0.0}
+{"scraper": "fema_mitigation", "name": "FEMA Hazard Mitigation (HMGP / BRIC)", "count": 2, "elapsed_s": 0.0}
+{"scraper": "pace_florida", "name": "PACE Financing (Florida)", "count": 4, "elapsed_s": 0.0}
+{"scraper": "florida_statutes", "name": "Florida Statutes (Property Tax / Net Metering)", "count": 11, "elapsed_s": 0.0}
+{"scraper": "federal_extras", "name": "Federal extras (DOE WAP, LIHEAP, USDA 504, HUD 203k, VA EEM, EV credits)", "count": 16, "elapsed_s": 0.0}
+{"scraper": "tampa_bay_msa", "name": "Tampa Bay MSA (Pinellas / Pasco / Manatee)", "count": 6, "elapsed_s": 0.0}

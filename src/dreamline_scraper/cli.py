@@ -50,6 +50,24 @@ def _parser() -> argparse.ArgumentParser:
             "review. Pass -1 to check every record (slow). Default: 0 (skip)."
         ),
     )
+    p.add_argument(
+        "--disable-curated",
+        action="store_true",
+        help=(
+            "Suppress every scraper's hardcoded curated baseline. Use this "
+            "to see exactly what the live scrapers / APIs / LLM parser "
+            "produce on their own."
+        ),
+    )
+    p.add_argument(
+        "--include-source",
+        action="store_true",
+        help=(
+            "Append an extraction_source column to the deliverable CSV so "
+            "callers can see whether each row came from live / api / llm / "
+            "curated extraction."
+        ),
+    )
     p.add_argument("-v", "--verbose", action="count", default=0)
     return p
 
@@ -66,17 +84,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     settings = load_settings()
+    if args.disable_curated:
+        settings.disable_curated = True
     records = run_pipeline(
         sources=args.sources,
         settings=settings,
         output_path=__path(args.output),
         review_path=__path(args.review_queue),
         check_links=args.check_links,
+        include_source=args.include_source,
     )
     flagged = sum(1 for r in records if r.review_needed == "Yes")
+    # Provenance breakdown so the operator sees live vs curated vs llm at a glance.
+    from collections import Counter
+    counts = Counter(r.extraction_source or "unknown" for r in records)
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "empty"
     print(
         f"Wrote {len(records)} records to {args.output} "
-        f"({flagged} flagged for review)."
+        f"({flagged} flagged for review). Sources: {breakdown}"
     )
     return 0
 

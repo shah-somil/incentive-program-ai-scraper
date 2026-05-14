@@ -27,10 +27,18 @@ class IRSScraper(BaseScraper):
             r for r in federal_baseline()
             if "(Section 25C)" in r.program_name or "(Section 25D)" in r.program_name
         ]
-        if not self.ctx.llm.enabled:
-            return baseline
+        baseline = self.curated(baseline)
 
-        live: list[RawIncentive] = []
+        live = self._scrape_live()
+        if live:
+            seen = {r.program_name.lower() for r in live}
+            baseline = [r for r in baseline if r.program_name.lower() not in seen]
+        return list(live) + baseline
+
+    def _scrape_live(self) -> list[RawIncentive]:
+        if not self.ctx.llm.enabled:
+            return []
+        out: list[RawIncentive] = []
         for url in _URLS:
             try:
                 resp = self.ctx.session.get(url)
@@ -40,7 +48,7 @@ class IRSScraper(BaseScraper):
             if not resp.ok:
                 continue
             text = visible_text(make_soup(resp.text))[:14000]
-            live.extend(
+            out.extend(
                 self.ctx.llm.parse(
                     content=text,
                     source_url=url,
@@ -48,4 +56,4 @@ class IRSScraper(BaseScraper):
                     content_type="html_text",
                 )
             )
-        return live or baseline
+        return out

@@ -1,10 +1,18 @@
 """DSIRE Florida scraper.
 
-DSIRE's public listing at https://programs.dsireusa.org/system/program?state=FL
-returns a paginated set of program detail links.  We parse each detail page
-into a :class:`RawIncentive`.  When the live site is unavailable (CI runs,
-rate limits) the scraper falls back to a lightweight curated set of the most
-relevant Florida-wide programs documented in the kickoff brief.
+DSIRE's public listing is an Angular SPA, so a plain GET typically returns
+zero ``/detail/`` links.  We try several strategies in order:
+
+1. **JSON API** (``/api/v1/programs?state=FL``) — undocumented but stable.
+2. **Playwright render** of the SPA listing page when the browser binary
+   is installed locally.
+3. **Plain GET** of the static HTML as a last-ditch fallback (rarely yields
+   anything useful for SPA-rendered pages).
+
+Whatever the discovery path, each program detail URL is then fetched and
+parsed into a :class:`RawIncentive`.  When every live path fails the scraper
+falls back to the curated state baseline (suppressed by
+``--disable-curated``).
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 _LISTING_URL = "https://programs.dsireusa.org/system/program?state=FL"
+_API_URL = "https://programs.dsireusa.org/api/v1/programs?state=FL"
 _BASE_URL = "https://programs.dsireusa.org"
 
 
@@ -89,44 +98,129 @@ class DSIREFloridaScraper(BaseScraper):
 
     def scrape(self) -> Iterable[RawIncentive]:
         live = list(self._scrape_live())
+        baseline = self.curated(list(self._curated_baseline()))
         if live:
-            return live
+            seen = {r.program_name.lower() for r in live}
+            baseline = [r for r in baseline if r.program_name.lower() not in seen]
+            return list(live) + baseline
         LOGGER.info("DSIRE live scrape returned 0 records; falling back to curated baseline")
-        return list(self._curated_baseline())
+        return baseline
 
     # ------------------------------------------------------------------
     # Live scrape
     # ------------------------------------------------------------------
 
     def _scrape_live(self) -> Iterator[RawIncentive]:
+        program_urls = self._discover_program_urls()
+        LOGGER.info("DSIRE discovered %d program links", len(program_urls))
+        # Cap detail fetches so a full run completes in reasonable time when
+        # we're rendering each page in Playwright.
+        for url in program_urls[:30]:
+            html = self._fetch_detail_html(url)
+            if not html:
+                continue
+            record = self._parse_detail(html, url)
+            if record is not None:
+                yield record
+
+    def _fetch_detail_html(self, url: str) -> str:
+        """Try Playwright first (DSIRE pages are SPA-rendered); plain GET as fallback."""
+
+        try:
+            from ..extractors.playwright_runner import render_page
+
+            html = render_page(
+                url,
+                wait_selector="h1, h2, .program-name, .program-overview",
+                timeout_ms=30000,
+            )
+            if html and "{{" not in html[:5000]:
+                return html
+        except Exception as exc:  # pragma: no cover - playwright env
+            LOGGER.debug("DSIRE playwright detail render failed %s: %s", url, exc)
+        try:
+            detail = self.ctx.session.get(url)
+            if detail.ok:
+                return detail.text
+        except Exception as exc:  # pragma: no cover - network
+            LOGGER.debug("DSIRE detail fetch failed %s: %s", url, exc)
+        return ""
+
+    def _discover_program_urls(self) -> List[str]:
+        # Strategy 1 -- JSON API (undocumented but commonly available)
+        urls = self._urls_from_api()
+        if urls:
+            return urls[:80]
+
+        # Strategy 2 -- Playwright render of the SPA
+        urls = self._urls_from_playwright()
+        if urls:
+            return urls[:80]
+
+        # Strategy 3 -- plain GET of the SPA shell (usually empty)
+        urls = self._urls_from_static_html()
+        return urls[:80]
+
+    def _urls_from_api(self) -> List[str]:
+        try:
+            resp = self.ctx.session.session.get(
+                _API_URL, timeout=self.ctx.settings.http_timeout_s
+            )
+        except Exception as exc:  # pragma: no cover - network
+            LOGGER.debug("DSIRE API fetch failed: %s", exc)
+            return []
+        if not resp.ok:
+            LOGGER.debug("DSIRE API HTTP %s", resp.status_code)
+            return []
+        try:
+            payload = resp.json()
+        except ValueError:
+            return []
+        items = payload.get("data") or payload.get("programs") or payload
+        out: List[str] = []
+        if isinstance(items, list):
+            for entry in items:
+                if not isinstance(entry, dict):
+                    continue
+                pid = entry.get("id") or entry.get("program_id")
+                if pid:
+                    out.append(f"{_BASE_URL}/detail/{pid}")
+        return out
+
+    def _urls_from_playwright(self) -> List[str]:
+        try:
+            from ..extractors.playwright_runner import render_page
+        except Exception:  # pragma: no cover - optional dep
+            return []
+        try:
+            html = render_page(_LISTING_URL, wait_selector="a[href*='/detail/']")
+        except Exception as exc:  # pragma: no cover - playwright env
+            LOGGER.debug("DSIRE playwright render failed: %s", exc)
+            return []
+        if not html:
+            return []
+        return self._extract_detail_links(html)
+
+    def _urls_from_static_html(self) -> List[str]:
         try:
             resp = self.ctx.session.get(_LISTING_URL)
         except Exception as exc:  # pragma: no cover - network
             LOGGER.warning("DSIRE listing fetch failed: %s", exc)
-            return
+            return []
         if not resp.ok:
             LOGGER.warning("DSIRE listing HTTP %s", resp.status_code)
-            return
-        soup = make_soup(resp.text)
-        program_urls: List[str] = []
+            return []
+        return self._extract_detail_links(resp.text)
+
+    @staticmethod
+    def _extract_detail_links(html: str) -> List[str]:
+        soup = make_soup(html)
+        urls: List[str] = []
         for a in soup.select("a"):
             href = a.get("href", "")
             if "/detail/" in href or "/system/program/detail/" in href:
-                program_urls.append(urljoin(_BASE_URL, href))
-        program_urls = list(dict.fromkeys(program_urls))[:60]
-        LOGGER.info("DSIRE listing found %d program links", len(program_urls))
-
-        for url in program_urls:
-            try:
-                detail = self.ctx.session.get(url)
-            except Exception as exc:  # pragma: no cover - network
-                LOGGER.debug("DSIRE detail fetch failed %s: %s", url, exc)
-                continue
-            if not detail.ok:
-                continue
-            record = self._parse_detail(detail.text, url)
-            if record is not None:
-                yield record
+                urls.append(urljoin(_BASE_URL, href))
+        return list(dict.fromkeys(urls))
 
     def _parse_detail(self, html: str, url: str) -> Optional[RawIncentive]:
         soup = make_soup(html)
@@ -135,6 +229,17 @@ class DSIREFloridaScraper(BaseScraper):
             return None
         program_name = clean_text(h1.get_text())
         if not program_name:
+            return None
+        # DSIRE is an Angular SPA; the static HTML often returns template
+        # placeholders like ``{{ program.name }}`` instead of real values.
+        # Reject those rather than emit garbage records.
+        if "{{" in program_name or "}}" in program_name:
+            return None
+        if program_name.lower() in {
+            "primary navigation",
+            "dsire",
+            "database of state incentives for renewables & efficiency",
+        }:
             return None
 
         body = visible_text(soup)
@@ -177,6 +282,7 @@ class DSIREFloridaScraper(BaseScraper):
             application_url=url,
             last_verified_at=today_iso(),
             confidence_score=0.65,
+            extraction_source="live_html",
         )
 
     # ------------------------------------------------------------------

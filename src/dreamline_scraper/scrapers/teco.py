@@ -7,7 +7,7 @@ import re
 from typing import Iterable, Iterator, List
 
 from ..extractors.html import clean_text, make_soup, visible_text
-from ..schema import AmountType, Level, RawIncentive, RawType, today_iso
+from ..schema import Level, RawIncentive, RawType, today_iso
 from .base import BaseScraper
 from ._curated import utility_baseline
 
@@ -39,13 +39,41 @@ class TECOScraper(BaseScraper):
             return "tampa electric" in admin or "teco" in admin or "peoples gas" in admin
 
         live = list(self._scrape_live())
+
+        # Optionally augment regex-extraction with an LLM pass over the main
+        # rebate hub so we capture structured names / amounts that the regex
+        # misses.
+        if self.ctx.llm.enabled:
+            live.extend(self._scrape_llm())
+
         baseline = [r for r in utility_baseline() if is_teco(r)]
         baseline += [r for r in utility_extras() if is_teco(r)]
+        baseline = self.curated(baseline)
+
         seen = {r.program_name.lower() for r in live}
         for r in baseline:
             if r.program_name.lower() not in seen:
                 live.append(r)
         return live
+
+    def _scrape_llm(self) -> Iterator[RawIncentive]:
+        for url in [_REBATES_URL, *_REBATE_SUBPAGES]:
+            try:
+                resp = self.ctx.session.get(url)
+            except Exception as exc:  # pragma: no cover - network
+                LOGGER.warning("TECO LLM fetch failed for %s: %s", url, exc)
+                continue
+            if not resp.ok:
+                continue
+            text = visible_text(make_soup(resp.text))[:12000]
+            if len(text.strip()) < 200:
+                continue
+            yield from self.ctx.llm.parse(
+                content=text,
+                source_url=url,
+                source_name="Tampa Electric residential rebates",
+                content_type="html_text",
+            )
 
     def _scrape_live(self) -> Iterator[RawIncentive]:
         for url in [_REBATES_URL, *_REBATE_SUBPAGES]:
@@ -89,6 +117,7 @@ class TECOScraper(BaseScraper):
                     expires_at="Ongoing",
                     last_verified_at=today_iso(),
                     confidence_score=0.55,
+                    extraction_source="live_html",
                 )
 
 

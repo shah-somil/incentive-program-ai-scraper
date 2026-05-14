@@ -235,6 +235,7 @@ def to_record(raw: RawIncentive) -> IncentiveRecord:
         updated_at=raw.last_verified_at or today_iso(),
         review_needed=review_needed,
         program_links=link,
+        extraction_source=raw.extraction_source or "unknown",
     )
 
 

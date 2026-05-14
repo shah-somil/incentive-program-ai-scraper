@@ -36,6 +36,7 @@ def run_pipeline(
     review_path: Path = REVIEW_QUEUE_CSV,
     log_dir: Path = LOG_DIR,
     check_links: int = 0,
+    include_source: bool = False,
 ) -> List[IncentiveRecord]:
     """Execute every scraper and write the final CSV.
 
@@ -52,7 +53,11 @@ def run_pipeline(
     )
 
     scrapers = build_scrapers(sources, ctx=ctx)
-    LOGGER.info("running %d scrapers", len(scrapers))
+    LOGGER.info(
+        "running %d scrapers (disable_curated=%s)",
+        len(scrapers),
+        getattr(settings, "disable_curated", False),
+    )
 
     raw: List[RawIncentive] = []
     audit: List[dict] = []
@@ -64,12 +69,16 @@ def run_pipeline(
             LOGGER.exception("scraper %s crashed: %s", scraper.key, exc)
             results = []
         elapsed = time.monotonic() - t0
+        # Per-scraper provenance breakdown for the audit log.
+        from collections import Counter
+        src_counts = Counter(r.extraction_source or "unknown" for r in results)
         audit.append(
             {
                 "scraper": scraper.key,
                 "name": scraper.name,
                 "count": len(results),
                 "elapsed_s": round(elapsed, 2),
+                "sources": dict(src_counts),
             }
         )
         raw.extend(results)
@@ -82,7 +91,7 @@ def run_pipeline(
     normalized = enforce_review_flags(normalized)
     normalized = verify_links(normalized, max_checks=check_links)
 
-    write_records(output_path, normalized)
+    write_records(output_path, normalized, include_source=include_source)
     write_review_queue(review_path, normalized)
 
     log_dir.mkdir(parents=True, exist_ok=True)

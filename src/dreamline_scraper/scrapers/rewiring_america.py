@@ -1,24 +1,40 @@
 """Rewiring America IRA calculator scraper / API client.
 
-If a free API key is available (env ``REWIRING_AMERICA_KEY``) we hit
-``https://api.rewiringamerica.org/api/v1/calculator`` for a Tampa ZIP and
-flatten the response.  Otherwise we fall back to the federal IRA programs
-encoded in :mod:`._curated` (residential clean-energy credit, 25C credit,
-HOMES + HEEHRA rebates).
+Three extraction paths, tried in order:
+
+1. **Live API** when ``REWIRING_AMERICA_KEY`` is set — calls
+   ``https://api.rewiringamerica.org/api/v1/calculator`` for a Tampa ZIP
+   and flattens the structured response.
+2. **Live HTML + LLM parser** — scrape Rewiring America's public IRA
+   program pages and ask the LLM to structure them. This works without
+   any API key.
+3. **Curated baseline** — IRS / IRA / HEEHRA records from
+   :mod:`._curated` and :mod:`._curated_expanded` (suppressed by
+   ``--disable-curated``).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, List, Optional
 
 from ..config import DEFAULT_ZIP
+from ..extractors.html import make_soup, visible_text
 from ..schema import AmountType, Level, RawIncentive, RawType, today_iso
 from .base import BaseScraper
 
 LOGGER = logging.getLogger(__name__)
 
 _API_URL = "https://api.rewiringamerica.org/api/v1/calculator"
+
+# Public Rewiring America program pages — accessible without an API key.
+# We hand each through the LLM parser; expected output is the IRA programs
+# described on the page (HEEHRA, HOMES, 25C, 25D, 30D, etc.).
+_LIVE_HTML_URLS = [
+    "https://www.rewiringamerica.org/app/ira-calculator",
+    "https://homes.rewiringamerica.org/federal-incentives",
+    "https://www.rewiringamerica.org/policy/inflation-reduction-act",
+]
 
 
 _AUTHORITY_TO_LEVEL = {
@@ -49,12 +65,45 @@ class RewiringAmericaScraper(BaseScraper):
     name = "Rewiring America (IRA)"
 
     def scrape(self) -> Iterable[RawIncentive]:
+        live: List[RawIncentive] = []
         if self.ctx.settings.rewiring_america_key:
-            live = list(self._fetch_api())
-            if live:
-                return live
-        LOGGER.info("Rewiring America falling back to curated federal baseline")
-        return list(self._curated_baseline())
+            live.extend(self._fetch_api())
+        if not live:
+            live.extend(self._fetch_html_via_llm())
+
+        baseline = self.curated(self._curated_baseline())
+        if live:
+            seen = {r.program_name.lower() for r in live}
+            baseline = [r for r in baseline if r.program_name.lower() not in seen]
+        else:
+            LOGGER.info("Rewiring America falling back to curated federal baseline")
+        return list(live) + baseline
+
+    def _fetch_html_via_llm(self) -> List[RawIncentive]:
+        if not self.ctx.llm.enabled:
+            return []
+        out: List[RawIncentive] = []
+        for url in _LIVE_HTML_URLS:
+            try:
+                resp = self.ctx.session.get(url)
+            except Exception as exc:  # pragma: no cover - network
+                LOGGER.warning("Rewiring America HTML fetch failed %s: %s", url, exc)
+                continue
+            if not resp.ok:
+                LOGGER.info("Rewiring America %s HTTP %s", url, resp.status_code)
+                continue
+            text = visible_text(make_soup(resp.text))[:14000]
+            if len(text.strip()) < 200:
+                continue
+            out.extend(
+                self.ctx.llm.parse(
+                    content=text,
+                    source_url=url,
+                    source_name="Rewiring America IRA program page",
+                    content_type="html_text",
+                )
+            )
+        return out
 
     # ------------------------------------------------------------------
     # Live API
@@ -129,6 +178,7 @@ class RewiringAmericaScraper(BaseScraper):
             source_url=entry.get("more_info_url") or "https://www.rewiringamerica.org/",
             last_verified_at=today_iso(),
             confidence_score=0.85,
+            extraction_source="live_api",
         )
 
     def _curated_baseline(self) -> Iterable[RawIncentive]:

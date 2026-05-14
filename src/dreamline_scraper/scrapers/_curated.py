@@ -27,14 +27,19 @@ def _today() -> str:
 
 
 def _default_ongoing(records: List[RawIncentive]) -> List[RawIncentive]:
-    """Curated entries without an explicit ``expires_at`` are evergreen programs."""
+    """Apply curated-baseline defaults to a batch of records.
+
+    Stamps ``expires_at = "Ongoing"`` for evergreen programs and tags every
+    record with ``extraction_source = "curated"`` so the provenance survives
+    through the pipeline.
+    """
 
     out: List[RawIncentive] = []
     for r in records:
+        updates = {"extraction_source": "curated"}
         if not r.expires_at:
-            out.append(r.model_copy(update={"expires_at": "Ongoing"}))
-        else:
-            out.append(r)
+            updates["expires_at"] = "Ongoing"
+        out.append(r.model_copy(update=updates))
     return out
 
 

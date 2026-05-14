@@ -13,8 +13,7 @@ eligibility_criteria, incentive_amount, valid_until, updated_at,
 review_needed, program_links
 ```
 
-`incentive_type` is constrained to: `Grants | Rebates | Finance Solutions |
-Tax Credits | Investments`.
+`incentive_type` is constrained to: `Grants | Rebates | Finance Solutions | Tax Credits | Investments`.
 
 ## Quick start
 
@@ -38,7 +37,7 @@ pytest
 Outputs:
 
 - `output/Extracted_Tampa_Incentives/extracted_tampa_incentives.csv` — the
-  deliverable.
+deliverable.
 - `output/logs/review_queue.csv` — every record where `review_needed = Yes`.
 - `output/logs/run_<timestamp>.jsonl` — per-source counts and timings.
 
@@ -48,12 +47,14 @@ Outputs:
 utility, county, and city programs.  Most recent run produced 84 unique
 records (target was 100+):
 
-| Bucket                   | Records |
-|--------------------------|---------|
-| Federal (IRS / IRA / DOE / HUD / VA / FEMA / USDA) | ~30 |
-| Florida statewide        | ~20 |
-| Hillsborough County / Tampa / surrounding MSA      | ~20 |
-| TECO / Duke / Peoples Gas (utility)                | ~15 |
+
+| Bucket                                             | Records |
+| -------------------------------------------------- | ------- |
+| Federal (IRS / IRA / DOE / HUD / VA / FEMA / USDA) | ~30     |
+| Florida statewide                                  | ~20     |
+| Hillsborough County / Tampa / surrounding MSA      | ~20     |
+| TECO / Duke / Peoples Gas (utility)                | ~15     |
+
 
 See `python -m dreamline_scraper.cli list-sources` for the full registry.
 
@@ -77,13 +78,13 @@ score, is automatically flagged with `review_needed = "Yes"`.
 Most government / utility sites in scope are JavaScript-heavy or gated:
 
 - DSIRE Florida loads its program list from an Angular SPA that calls a
-  paid-only API.  Without a DSIRE key the scraper falls back to a curated
-  set of the canonical Florida statewide programs.
+paid-only API.  Without a DSIRE key the scraper falls back to a curated
+set of the canonical Florida statewide programs.
 - The Rewiring America public site requires a free API key for live calls.
-  Without one, the scraper falls back to canonical IRA federal programs.
+Without one, the scraper falls back to canonical IRA federal programs.
 - TECO, Duke, Florida Housing, Hillsborough, Tampa pages are scraped live
-  for additional rebate sentences when reachable; curated baselines fill in
-  the canonical numbers regardless.
+for additional rebate sentences when reachable; curated baselines fill in
+the canonical numbers regardless.
 
 Each scraper transparently merges live results with its curated fallback,
 deduplicating on `(program_name, level, program_administrator)`.
@@ -96,7 +97,8 @@ processes unstructured pages with a JSON-schema-enforced response format
 pipeline; any with `confidence_score < 0.7` are flagged for review.
 
 If no key is set, the LLM parser is silently disabled and only the curated
-+ static-scraping path runs.  This keeps the pipeline functional in offline
+
+- static-scraping path runs.  This keeps the pipeline functional in offline
 or CI environments.
 
 ## Quality gates
@@ -119,26 +121,27 @@ Optional URL liveness checks: `python -m dreamline_scraper.cli run --check-links
 ## Known limitations / follow-ups
 
 - DSIRE FL listing is JS-rendered behind a paid API.  Live discovery is
-  blocked; the curated state baseline is the source of truth until a DSIRE
-  key is provisioned (or Playwright is installed and used).
+blocked; the curated state baseline is the source of truth until a DSIRE
+key is provisioned (or Playwright is installed and used).
 - Rewiring America requires a free API key for live use.  Sign up at
-  `https://docs.rewiringamerica.org/signin` and drop the key in `.env`.
+`https://docs.rewiringamerica.org/signin` and drop the key in `.env`.
 - Playwright support is wired (see `extractors/playwright_runner.py`) but
-  the Chromium browser is not installed by default.  Install with
-  `python -m playwright install chromium` if you want JS-heavy sites
-  (FHFC, Duke, HCFL) to be rendered live.
+the Chromium browser is not installed by default.  Install with
+`python -m playwright install chromium` if you want JS-heavy sites
+(FHFC, Duke, HCFL) to be rendered live.
 - Several utility / city programs are intentionally flagged with
-  `confidence_score < 0.7` (e.g. Duke EV charger rebate, RenewPACE,
-  FRED, Habitat for Humanity, Manatee DPA).  Their canonical amounts vary
-  year-to-year and the review queue is the right place for a human to
-  confirm them against a fresh source page.
+`confidence_score < 0.7` (e.g. Duke EV charger rebate, RenewPACE,
+FRED, Habitat for Humanity, Manatee DPA).  Their canonical amounts vary
+year-to-year and the review queue is the right place for a human to
+confirm them against a fresh source page.
 - Geographic scope is Tampa + Hillsborough + Tampa Bay MSA (Pinellas /
-  Pasco / Manatee).  Adding a new region requires only a new entry in
-  `_curated_expanded.local_extras` plus optional live scrapers.
+Pasco / Manatee).  Adding a new region requires only a new entry in
+`_curated_expanded.local_extras` plus optional live scrapers.
 
 ## Reference materials
 
 - `resources/Dreamline_AI_Brief_Incentives_Process-converted.md` — strategic
-  brief and 4-phase AI agent roadmap.
+brief and 4-phase AI agent roadmap.
 - `resources/Incentive Data Extraction Info-converted.md` — concrete CSV
-  task specification (column order, vocabulary, sources).
+task specification (column order, vocabulary, sources).
+

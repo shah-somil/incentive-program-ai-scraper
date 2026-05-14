@@ -128,6 +128,17 @@ class Settings:
     request_min_interval_s: float = 1.0
     http_timeout_s: float = 30.0
     enabled_sources: List[str] = field(default_factory=lambda: list(SOURCE_KEYS))
+    # When True, every scraper skips its hardcoded curated baseline and returns
+    # only what the live source / API / LLM parser produced. Used to audit how
+    # much of the CSV is genuinely scraped vs. statically curated.
+    disable_curated: bool = False
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
@@ -136,6 +147,7 @@ def load_settings() -> Settings:
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         rewiring_america_key=os.getenv("REWIRING_AMERICA_KEY") or None,
         dsire_key=os.getenv("DSIRE_KEY") or None,
+        disable_curated=_env_bool("DISABLE_CURATED", default=False),
     )
 
 

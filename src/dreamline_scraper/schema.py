@@ -113,6 +113,11 @@ class RawIncentive(BaseModel):
     last_verified_at: Optional[str] = None
     confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     active: bool = True
+    # Provenance of this record: which extraction path produced it.
+    # Values: "curated" (hand-typed catalog), "live_html" (regex/HTML parser
+    # on a live page), "live_api" (live API call), "llm" (LLM-parsed page),
+    # or "unknown".
+    extraction_source: str = "unknown"
 
     @field_validator("program_name")
     @classmethod
@@ -143,6 +148,10 @@ CSV_COLUMNS = [
 ]
 
 
+# Optional provenance column appended when ``include_source=True``.
+CSV_SOURCE_COLUMN = "extraction_source"
+
+
 class IncentiveRecord(BaseModel):
     """Final flattened row that maps 1:1 to the required CSV columns."""
 
@@ -160,6 +169,7 @@ class IncentiveRecord(BaseModel):
     updated_at: str  # ISO date YYYY-MM-DD
     review_needed: str  # "Yes" | "No"
     program_links: str  # URL
+    extraction_source: str = "unknown"
 
     @field_validator("review_needed")
     @classmethod
@@ -168,8 +178,8 @@ class IncentiveRecord(BaseModel):
             raise ValueError("review_needed must be 'Yes' or 'No'")
         return v
 
-    def as_csv_row(self) -> List[str]:
-        return [
+    def as_csv_row(self, include_source: bool = False) -> List[str]:
+        row = [
             self.program_name,
             self.state,
             self.city,
@@ -183,6 +193,9 @@ class IncentiveRecord(BaseModel):
             self.review_needed,
             self.program_links,
         ]
+        if include_source:
+            row.append(self.extraction_source or "unknown")
+        return row
 
 
 def today_iso() -> str:

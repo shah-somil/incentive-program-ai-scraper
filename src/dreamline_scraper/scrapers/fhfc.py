@@ -36,22 +36,31 @@ class FloridaHousingScraper(BaseScraper):
             r for r in state_extras()
             if "Florida Housing" in (r.program_administrator or "")
         )
+        baseline = self.curated(baseline)
 
+        live = self._scrape_live()
+        if live:
+            seen = {r.program_name.lower() for r in live}
+            baseline = [r for r in baseline if r.program_name.lower() not in seen]
+        return list(live) + baseline
+
+    def _scrape_live(self) -> list[RawIncentive]:
         if not self.ctx.llm.enabled:
-            return baseline
-
+            return []
         html = self._fetch_html()
         if not html:
-            return baseline
-
+            return []
         text = visible_text(make_soup(html))[:14000]
-        live = self.ctx.llm.parse(
-            content=text,
-            source_url=_URL,
-            source_name="Florida Housing Finance Corp",
-            content_type="html_text",
+        if len(text.strip()) < 200:
+            return []
+        return list(
+            self.ctx.llm.parse(
+                content=text,
+                source_url=_URL,
+                source_name="Florida Housing Finance Corp",
+                content_type="html_text",
+            )
         )
-        return list(live) or baseline
 
     def _fetch_html(self) -> str:
         try:

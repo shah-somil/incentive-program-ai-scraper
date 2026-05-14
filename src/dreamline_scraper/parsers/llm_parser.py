@@ -16,6 +16,23 @@ from .prompts import RESPONSE_JSON_SCHEMA, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 LOGGER = logging.getLogger(__name__)
 
 
+def _model_locks_temperature(model: str) -> bool:
+    """Return True if the model rejects non-default ``temperature`` values.
+
+    OpenAI's reasoning-style models (``o1``, ``o3``, ``o4``, ``gpt-5*``) only
+    accept the default temperature of 1 and will 400 on any other value.
+    """
+
+    if not model:
+        return False
+    name = model.lower()
+    if name.startswith(("o1", "o3", "o4")):
+        return True
+    if name.startswith("gpt-5"):
+        return True
+    return False
+
+
 class LLMParser:
     """Wraps the OpenAI Chat Completions API with structured outputs."""
 
@@ -59,19 +76,25 @@ class LLMParser:
             content_type=content_type,
             content=truncated,
         )
+        request_kwargs = {
+            "model": self.settings.openai_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": RESPONSE_JSON_SCHEMA,
+            },
+        }
+        # Newer reasoning-style models (gpt-5*, o-series) reject any non-default
+        # temperature.  Only send temperature for classic chat models that
+        # accept it.
+        if not _model_locks_temperature(self.settings.openai_model):
+            request_kwargs["temperature"] = 0.0
+
         try:
-            response = client.chat.completions.create(
-                model=self.settings.openai_model,
-                temperature=0.0,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": RESPONSE_JSON_SCHEMA,
-                },
-            )
+            response = client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             LOGGER.warning("OpenAI request failed for %s: %s", source_url, exc)
             return []
@@ -108,6 +131,7 @@ class LLMParser:
                 continue
             entry.setdefault("source_url", source_url)
             entry.setdefault("last_verified_at", today)
+            entry["extraction_source"] = "llm"
             try:
                 yield RawIncentive.model_validate(entry)
             except ValidationError as exc:

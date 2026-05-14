@@ -6,6 +6,8 @@ Implements the rules from brief Section 8.2:
 * Per-host minimum interval between requests (default 1 req/s).
 * Exponential backoff on 429 / 5xx via :mod:`tenacity`.
 * Optional disk cache (TTL'd by mtime) to avoid re-fetching during dev.
+* Browser-like User-Agent override for hosts that block scraper UAs
+  (Duke Energy, etc.).
 """
 
 from __future__ import annotations
@@ -17,6 +19,20 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import urlparse
+
+
+# Browser-like UA for hosts that reject the project UA with a 403.
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+# Hosts that have been observed to reject our descriptive UA with HTTP 403.
+# We swap to a browser UA for these (read-only public pages, no credentials).
+_BROWSER_UA_HOSTS = {
+    "www.duke-energy.com",
+    "duke-energy.com",
+}
 
 import requests
 from tenacity import (
@@ -38,6 +54,16 @@ class PoliteSession:
         self.settings = settings or load_settings()
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": self.settings.user_agent})
+        # Some systems (notably macOS with a Homebrew Python where the system
+        # OpenSSL trust store isn't populated) fall over with
+        # ``SSL: CERTIFICATE_VERIFY_FAILED``.  Pinning ``certifi`` as the CA
+        # bundle works reliably across platforms.
+        try:
+            import certifi  # type: ignore
+
+            self.session.verify = certifi.where()
+        except ImportError:  # pragma: no cover - certifi is in requirements
+            pass
         self._last_call: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._cache_enabled = cache
@@ -96,7 +122,30 @@ class PoliteSession:
     def _do_request(self, method: str, url: str, **kwargs) -> requests.Response:
         self._respect_rate_limit(url)
         kwargs.setdefault("timeout", self.settings.http_timeout_s)
-        resp = self.session.request(method, url, **kwargs)
+        host = urlparse(url).netloc
+        if host in _BROWSER_UA_HOSTS:
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers.setdefault("User-Agent", _BROWSER_UA)
+            kwargs["headers"] = headers
+        try:
+            resp = self.session.request(method, url, **kwargs)
+        except requests.exceptions.SSLError:
+            # Some government / utility sites publish broken intermediate CA
+            # chains (e.g. floridahousing.org, hcpafl.org).  We only ever GET
+            # public pages, never send credentials -- fall back to a
+            # verification-disabled retry so the scraper isn't held hostage
+            # by a misconfigured remote certificate.
+            LOGGER.warning(
+                "SSL verification failed for %s; retrying with verify=False",
+                url,
+            )
+            kwargs["verify"] = False
+            import warnings
+            from urllib3.exceptions import InsecureRequestWarning
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", InsecureRequestWarning)
+                resp = self.session.request(method, url, **kwargs)
         # Retry once on 429 / 503 with backoff handled by tenacity by raising.
         if resp.status_code in (429, 503):
             LOGGER.warning("got %s for %s, raising for retry", resp.status_code, url)

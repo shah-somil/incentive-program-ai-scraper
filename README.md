@@ -1,19 +1,10 @@
 # Dreamline AI — Tampa Incentives Scraper
 
-Hybrid Python pipeline that produces `extracted_tampa_incentives.csv` for the
-Dreamline AI incentive data project.  Uses APIs where available, traditional
-scrapers for static HTML, and an OpenAI structured-output LLM parser for
-unstructured / PDF content.
-
-The deliverable schema (per `resources/Incentive Data Extraction Info-converted.md`):
-
-```
-program_name, state, city, incentive_type, property_type, description,
-eligibility_criteria, incentive_amount, valid_until, updated_at,
-review_needed, program_links
-```
-
-`incentive_type` is constrained to: `Grants | Rebates | Finance Solutions | Tax Credits | Investments`.
+This pipeline produces `extracted_tampa_incentives.csv` — a list of housing
+and clean-energy incentive programs available to property owners in the
+Tampa Bay area. Every record comes from a live fetch of a public web page
+followed by LLM extraction into a Pydantic schema. There is no hand-typed
+program data anywhere in the codebase.
 
 ## Quick start
 
@@ -21,127 +12,246 @@ review_needed, program_links
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python -m playwright install chromium   # for JavaScript-heavy pages
 
-cp .env.example .env  # then fill in OPENAI_API_KEY (and optionally REWIRING_AMERICA_KEY)
+cp .env.example .env                    # add your OPENAI_API_KEY
 
-# Produce the CSV
-python -m dreamline_scraper.cli run -v
-
-# Run the quality gates
-python scripts/quality_gate.py
-
-# Run unit tests
-pytest
+python -m dreamline_scraper.cli run -v  # produce the CSV
+python scripts/quality_gate.py          # run quality checks
+pytest                                  # run unit tests
 ```
 
 Outputs:
 
 - `output/Extracted_Tampa_Incentives/extracted_tampa_incentives.csv` — the
-deliverable.
-- `output/logs/review_queue.csv` — every record where `review_needed = Yes`.
-- `output/logs/run_<timestamp>.jsonl` — per-source counts and timings.
+  deliverable, in the exact 12-column order required by the brief.
+- `output/logs/review_queue.csv` — every record flagged for human review,
+  with the reasons appended to the `eligibility_criteria` field.
+- `output/logs/run_<timestamp>.jsonl` — one line per source with the URL,
+  character count of fetched text, number of records produced, and timing.
+  This is the audit trail.
 
-## Coverage
+## How it works
 
-11 live scrapers + 3 catch-all "extras" sources covering federal, state,
-utility, county, and city programs.  Most recent run produced 84 unique
-records (target was 100+):
+The pipeline is intentionally short: every source goes through the same
+five steps, no exceptions. Adding a new source means adding one entry to
+[`sources.py`](src/dreamline_scraper/sources.py) — no new code.
 
+```mermaid
+flowchart TD
+    A[sources.py<br/>~28 URLs with jurisdiction hints] --> B
+    B[extractors/fetch.py<br/>HTTP → PDF / HTML / JS auto-detect] --> C
+    C[parsers/llm_parser.py<br/>OpenAI structured output → RawIncentive list] --> D
+    D[schema.py — Pydantic validation<br/>drops malformed records] --> E
+    E[pipeline/dedupe.py<br/>dedupe by program_name + level + administrator] --> F
+    F[normalizer.py<br/>RawIncentive → 12-col IncentiveRecord] --> G
+    G[validators/<br/>flag incomplete + low-confidence rows] --> H
+    H[pipeline/writer.py<br/>extracted_tampa_incentives.csv + review_queue.csv]
 
-| Bucket                                             | Records |
-| -------------------------------------------------- | ------- |
-| Federal (IRS / IRA / DOE / HUD / VA / FEMA / USDA) | ~30     |
-| Florida statewide                                  | ~20     |
-| Hillsborough County / Tampa / surrounding MSA      | ~20     |
-| TECO / Duke / Peoples Gas (utility)                | ~15     |
+    classDef io fill:#eef,stroke:#446
+    classDef llm fill:#fee,stroke:#a44
+    class A,H io
+    class C llm
+```
 
+### What each step does (non-technical)
 
-See `python -m dreamline_scraper.cli list-sources` for the full registry.
+1. **Where to look.** [`sources.py`](src/dreamline_scraper/sources.py) is a
+   simple list of public URLs (IRS, FEMA, Florida DOR, county housing
+   portals, TECO, Duke, Peoples Gas, etc.) plus a hint about the level
+   (federal / state / county / city / utility) and the jurisdiction. The
+   hint helps the LLM ground its extraction and fills in default values
+   when the page itself doesn't repeat them.
+2. **Fetch.** [`extractors/fetch.py`](src/dreamline_scraper/extractors/fetch.py)
+   tries a polite HTTP request first (1 request/second per host, 30-second
+   timeout, retries on transient failures). If the page is empty or
+   JavaScript-rendered, it falls back to a headless Chromium browser. PDFs
+   are detected by content-type and parsed with `pdfplumber`. The output is
+   plain text — the LLM doesn't need to know the transport.
+3. **LLM extraction.** [`parsers/llm_parser.py`](src/dreamline_scraper/parsers/llm_parser.py)
+   sends the text plus the jurisdiction hints to OpenAI with a JSON-schema
+   `response_format`. The model returns a list of programs in a fixed
+   schema. The system prompt forbids inferring amounts or deadlines that
+   aren't in the page.
+4. **Validate + dedupe.** [`schema.py`](src/dreamline_scraper/schema.py)
+   Pydantic-validates each record (drops anything missing `program_name`).
+   [`pipeline/dedupe.py`](src/dreamline_scraper/pipeline/dedupe.py) removes
+   duplicates that appear on more than one page.
+5. **Normalize + write.** [`normalizer.py`](src/dreamline_scraper/normalizer.py)
+   flattens each 17-field internal record into the 12-column CSV row the
+   brief asks for, including mapping internal types (`tax_credit`, `grant`,
+   `rebate`, ...) into the five required `incentive_type` values.
+   Records that fail the [completeness](src/dreamline_scraper/validators/completeness.py)
+   or [sanity](src/dreamline_scraper/validators/sanity.py) checks get
+   `review_needed = "Yes"` with the reason written into the
+   `eligibility_criteria` field for the reviewer to read.
 
-## Architecture
+## Reviewer-facing answers to common questions
+
+These three came up in the first review pass (Anirudh, May 2026). The
+answers below describe the current pipeline so a future reviewer can find
+them up front:
+
+### Where does the program data come from?
+
+Every row's `program_links` column is the URL the LLM read to produce that
+row, and every record carries `extraction_source = "llm"` for provenance.
+There is no curated baseline anymore — the previous `scrapers/_curated.py`
+and `scrapers/_curated_expanded.py` files have been removed, and so has
+the `--disable-curated` CLI flag (no longer meaningful when nothing is
+curated).
+
+If a row looks wrong, click the link in `program_links` to see exactly the
+page the LLM read.
+
+### What about dead or outdated links?
+
+Three layers of defense:
+
+1. **Audit log per run.** `output/logs/run_<timestamp>.jsonl` lists every
+   source with the number of characters fetched and number of records
+   produced. A source with `text_chars: 0` or `records: 0` is a fetch
+   problem you can investigate immediately.
+2. **Optional URL liveness check.** `python -m dreamline_scraper.cli run --check-links -1`
+   sends a HEAD request to every `program_links` URL and marks broken
+   ones for review. Default is off so offline runs don't generate false
+   positives.
+3. **Low-confidence flagging.** The LLM is asked to assign a
+   `confidence_score` between 0 and 1. Anything below 0.7 is flagged for
+   review automatically. Records on pages with very little extracted text
+   (likely SPAs that didn't render) get a low confidence and surface in
+   the review queue.
+
+### Why is it easier to investigate data quality now?
+
+Previously there were 14 per-source scraper files, each with its own
+extraction logic — so when a field looked wrong, you had to find the
+specific scraper, understand its bespoke parsing, and trace where the
+field came from. Today there is **one** extraction path, **one** prompt
+([parsers/prompts.py](src/dreamline_scraper/parsers/prompts.py)), and
+**one** validation layer. To debug a row:
+
+1. Look at `extraction_source` (always `llm` now).
+2. Open the URL in `program_links`.
+3. Compare what the page says against the row.
+4. If the model misread, the fix is to clarify the prompt; if the page
+   itself is misleading, flag for human review.
+
+## Adding a new source
+
+Add one `Source(...)` entry to [`sources.py`](src/dreamline_scraper/sources.py):
+
+```python
+Source(
+    name="My Source — Program Page",
+    url="https://example.gov/programs",
+    level="state",          # federal | state | county | city | utility
+    state="FL",
+    county="Hillsborough",  # optional
+    city="Tampa",           # optional
+    utility="TECO",         # optional
+    render="auto",          # auto | static | js
+    wait_selector="main",   # optional, for SPAs
+    timeout_ms=45_000,      # optional override
+)
+```
+
+The pipeline picks it up automatically next run.
+
+For dynamic source discovery in the future (an agent that finds new
+program pages on its own — see brief §14.4), the natural extension is a
+`discoverer/` module that writes proposed sources to a `candidates.yaml`
+queue that a human promotes into `sources.py`. Keeping `sources.py`
+human-curated protects against the discovery agent proposing dead URLs
+or marketing pages.
+
+## CLI
+
+```bash
+# Run all sources
+python -m dreamline_scraper.cli run -v
+
+# Run a subset (substring match on source name, case-insensitive)
+python -m dreamline_scraper.cli run --source "IRS" --source "TECO" -v
+
+# Add extraction_source column to the output CSV
+python -m dreamline_scraper.cli run --include-source
+
+# HEAD-check every program_links URL and flag broken ones for review
+python -m dreamline_scraper.cli run --check-links -1
+
+# Just list the configured sources
+python -m dreamline_scraper.cli list-sources
+```
+
+## Output schema
+
+Per `resources/Incentive Data Extraction Info-converted.md`:
 
 ```
-scrapers/   one BaseScraper subclass per source, each yielding RawIncentive
-parsers/    OpenAI LLM parser for unstructured pages (lazy / optional)
-extractors/ HTTP session (1 rps, retries, cache), HTML + PDF + Playwright helpers
-validators/ Pydantic + completeness + amount sanity + optional URL HEAD checks
-pipeline/   orchestrator -> dedupe -> writer (12-col CSV in exact column order)
+program_name, state, city, incentive_type, property_type, description,
+eligibility_criteria, incentive_amount, valid_until, updated_at,
+review_needed, program_links
 ```
 
-The pipeline normalises every `RawIncentive` (the brief's 17-field schema)
-into the leaner 12-column `IncentiveRecord` via `normalizer.to_record`.  Any
-record missing a required CSV column, or carrying a low LLM confidence
-score, is automatically flagged with `review_needed = "Yes"`.
+`incentive_type` is constrained to `Grants | Rebates | Finance Solutions |
+Tax Credits | Investments`. `review_needed` is `Yes` or `No`. `valid_until`
+is an ISO date, `Ongoing`, or `Unknown`. `updated_at` is the ISO date of
+the run.
 
-## Live scraping vs. curated baselines
+## Repository layout
 
-Most government / utility sites in scope are JavaScript-heavy or gated:
+```
+src/dreamline_scraper/
+  sources.py                      list of URLs to scrape (the only place
+                                  the scraper learns where to go)
+  schema.py                       RawIncentive (17 fields) + IncentiveRecord
+                                  (12-col CSV) Pydantic models
+  normalizer.py                   RawIncentive → IncentiveRecord
+  config.py                       environment-driven settings
+  cli.py                          argparse entry point
 
-- DSIRE Florida loads its program list from an Angular SPA that calls a
-paid-only API.  Without a DSIRE key the scraper falls back to a curated
-set of the canonical Florida statewide programs.
-- The Rewiring America public site requires a free API key for live calls.
-Without one, the scraper falls back to canonical IRA federal programs.
-- TECO, Duke, Florida Housing, Hillsborough, Tampa pages are scraped live
-for additional rebate sentences when reachable; curated baselines fill in
-the canonical numbers regardless.
+  extractors/
+    fetch.py                      unified fetcher (HTML / PDF / JS)
+    http.py                       polite HTTP session (1 rps, retries, cache)
+    html.py                       BeautifulSoup helpers
+    pdf.py                        pdfplumber wrapper
+    playwright_runner.py          Chromium fallback for JS-heavy pages
 
-Each scraper transparently merges live results with its curated fallback,
-deduplicating on `(program_name, level, program_administrator)`.
+  parsers/
+    llm_parser.py                 OpenAI structured-output wrapper
+    prompts.py                    system + user prompts + response JSON schema
 
-## LLM parsing (OpenAI structured outputs)
+  pipeline/
+    orchestrator.py               for each source: fetch → llm.parse →
+                                  dedupe → normalize → CSV
+    dedupe.py                     dedupe key: (program_name, level, admin)
+    writer.py                     CSV writer in exact column order
 
-When `OPENAI_API_KEY` is set, the LLM parser (`parsers/llm_parser.py`)
-processes unstructured pages with a JSON-schema-enforced response format
-(see `parsers/prompts.py`).  Records returned by the LLM are merged into the
-pipeline; any with `confidence_score < 0.7` are flagged for review.
+  validators/
+    completeness.py               flag rows missing required CSV columns
+    sanity.py                     amount sanity + optional URL liveness
 
-If no key is set, the LLM parser is silently disabled and only the curated
-
-- static-scraping path runs.  This keeps the pipeline functional in offline
-or CI environments.
+scripts/quality_gate.py           assertions over the final CSV
+tests/                            unit tests (pytest)
+resources/                        the original brief + extraction spec
+```
 
 ## Quality gates
 
-`scripts/quality_gate.py` runs against the produced CSV and asserts:
+`scripts/quality_gate.py` asserts on the produced CSV:
 
 - Header is exactly the 12 required columns in order.
-- `incentive_type` only uses `Grants / Rebates / Finance Solutions / Tax Credits / Investments`.
-- `review_needed` is only `Yes` or `No`.
-- `program_links` is populated for every row and starts with `http`.
+- `incentive_type` uses only the five allowed values.
+- `review_needed` is `Yes` or `No`.
+- `program_links` is populated and begins with `http`.
 - `program_name` is non-empty.
 - `updated_at` is ISO format.
-- Total records >= 60.
-
-The integration test `tests/test_pipeline.py` enforces the same invariants
-against an offline pipeline run.
-
-Optional URL liveness checks: `python -m dreamline_scraper.cli run --check-links -1`.
-
-## Known limitations / follow-ups
-
-- DSIRE FL listing is JS-rendered behind a paid API.  Live discovery is
-blocked; the curated state baseline is the source of truth until a DSIRE
-key is provisioned (or Playwright is installed and used).
-- Rewiring America requires a free API key for live use.  Sign up at
-`https://docs.rewiringamerica.org/signin` and drop the key in `.env`.
-- Playwright support is wired (see `extractors/playwright_runner.py`) but
-the Chromium browser is not installed by default.  Install with
-`python -m playwright install chromium` if you want JS-heavy sites
-(FHFC, Duke, HCFL) to be rendered live.
-- Several utility / city programs are intentionally flagged with
-`confidence_score < 0.7` (e.g. Duke EV charger rebate, RenewPACE,
-FRED, Habitat for Humanity, Manatee DPA).  Their canonical amounts vary
-year-to-year and the review queue is the right place for a human to
-confirm them against a fresh source page.
-- Geographic scope is Tampa + Hillsborough + Tampa Bay MSA (Pinellas /
-Pasco / Manatee).  Adding a new region requires only a new entry in
-`_curated_expanded.local_extras` plus optional live scrapers.
+- Total records ≥ 60.
 
 ## Reference materials
 
-- `resources/Dreamline_AI_Brief_Incentives_Process-converted.md` — strategic
-brief and 4-phase AI agent roadmap.
-- `resources/Incentive Data Extraction Info-converted.md` — concrete CSV
-task specification (column order, vocabulary, sources).
-
+- `resources/Dreamline_AI_Brief_Incentives_Process-converted.md` — the
+  strategic brief and 4-phase AI-agent roadmap.
+- `resources/Incentive Data Extraction Info-converted.md` — the concrete
+  CSV task specification (column order, vocabulary, sources).

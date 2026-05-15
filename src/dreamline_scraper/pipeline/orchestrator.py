@@ -1,4 +1,4 @@
-"""Run all scrapers, normalize, validate, and write CSVs."""
+"""Source-driven pipeline: fetch each page, LLM-parse, validate, write CSV."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 from ..config import (
     LOG_DIR,
@@ -17,9 +17,12 @@ from ..config import (
     ensure_output_dirs,
     load_settings,
 )
+from ..extractors.fetch import FetchResult, fetch
+from ..extractors.http import get_session
 from ..normalizer import to_records
-from ..scrapers import ScraperContext, build_scrapers
+from ..parsers.llm_parser import LLMParser
 from ..schema import IncentiveRecord, RawIncentive
+from ..sources import SOURCES, Source
 from ..validators.completeness import enforce_review_flags
 from ..validators.sanity import verify_links
 from .dedupe import dedupe
@@ -28,8 +31,11 @@ from .writer import write_records, write_review_queue
 LOGGER = logging.getLogger(__name__)
 
 
+Fetcher = Callable[[Source], FetchResult]
+
+
 def run_pipeline(
-    sources: Optional[Iterable[str]] = None,
+    source_names: Optional[Iterable[str]] = None,
     *,
     settings: Optional[Settings] = None,
     output_path: Path = OUTPUT_CSV,
@@ -37,51 +43,85 @@ def run_pipeline(
     log_dir: Path = LOG_DIR,
     check_links: int = 0,
     include_source: bool = False,
+    fetcher: Optional[Fetcher] = None,
+    llm: Optional[LLMParser] = None,
 ) -> List[IncentiveRecord]:
-    """Execute every scraper and write the final CSV.
+    """Fetch every source, LLM-parse, validate, write CSVs.
 
-    Returns the in-memory list of records so callers (and tests) can inspect
-    them without re-reading the file.
+    ``source_names`` filters the registry to a subset (matched on
+    ``Source.name`` substring, case-insensitive).  Pass ``fetcher`` / ``llm``
+    to inject test doubles.
     """
 
     ensure_output_dirs()
     settings = settings or load_settings()
-    ctx = ScraperContext(
-        settings=settings,
-        session=__lazy_session(),
-        llm=__lazy_llm(settings),
-    )
 
-    scrapers = build_scrapers(sources, ctx=ctx)
-    LOGGER.info(
-        "running %d scrapers (disable_curated=%s)",
-        len(scrapers),
-        getattr(settings, "disable_curated", False),
+    sources = _select_sources(source_names)
+    if not sources:
+        LOGGER.warning("no sources selected")
+        return []
+
+    session = get_session()
+    fetcher = fetcher or (
+        lambda s: fetch(
+            s.url,
+            render=s.render,
+            wait_selector=s.wait_selector,
+            timeout_ms=s.timeout_ms,
+            session=session,
+        )
     )
+    llm = llm or LLMParser(settings=settings)
+
+    if not llm.enabled:
+        LOGGER.warning(
+            "OPENAI_API_KEY not set — LLM parser disabled; "
+            "the pipeline will return zero records."
+        )
 
     raw: List[RawIncentive] = []
     audit: List[dict] = []
-    for scraper in scrapers:
+    for source in sources:
         t0 = time.monotonic()
         try:
-            results = scraper.run()
-        except Exception as exc:  # pragma: no cover - defensive
-            LOGGER.exception("scraper %s crashed: %s", scraper.key, exc)
-            results = []
+            result = fetcher(source)
+        except Exception as exc:
+            LOGGER.exception("fetch crashed for %s: %s", source.name, exc)
+            result = FetchResult(text="", content_type="empty", final_url=source.url)
+
+        records: List[RawIncentive] = []
+        if result.text:
+            try:
+                records = llm.parse(
+                    content=result.text,
+                    source=source,
+                    final_url=result.final_url,
+                    content_type=result.content_type,
+                )
+            except Exception as exc:
+                LOGGER.exception("llm parse crashed for %s: %s", source.name, exc)
         elapsed = time.monotonic() - t0
-        # Per-scraper provenance breakdown for the audit log.
-        from collections import Counter
-        src_counts = Counter(r.extraction_source or "unknown" for r in results)
+
         audit.append(
             {
-                "scraper": scraper.key,
-                "name": scraper.name,
-                "count": len(results),
+                "source": source.name,
+                "url": source.url,
+                "level": source.level,
+                "content_type": result.content_type,
+                "text_chars": len(result.text or ""),
+                "records": len(records),
                 "elapsed_s": round(elapsed, 2),
-                "sources": dict(src_counts),
             }
         )
-        raw.extend(results)
+        LOGGER.info(
+            "%s -> %d records (%s, %d chars, %.1fs)",
+            source.name,
+            len(records),
+            result.content_type,
+            len(result.text or ""),
+            elapsed,
+        )
+        raw.extend(records)
 
     LOGGER.info("collected %d raw records before dedupe", len(raw))
     raw = dedupe(raw)
@@ -104,18 +144,8 @@ def run_pipeline(
     return normalized
 
 
-# ---------------------------------------------------------------------------
-# Lazy helpers (split out so tests can patch easily)
-# ---------------------------------------------------------------------------
-
-
-def __lazy_session():
-    from ..extractors.http import get_session
-
-    return get_session()
-
-
-def __lazy_llm(settings: Settings):
-    from ..parsers.llm_parser import LLMParser
-
-    return LLMParser(settings=settings)
+def _select_sources(names: Optional[Iterable[str]]) -> List[Source]:
+    if not names:
+        return list(SOURCES)
+    wanted = [n.lower() for n in names]
+    return [s for s in SOURCES if any(w in s.name.lower() for w in wanted)]

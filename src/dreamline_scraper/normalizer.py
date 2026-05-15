@@ -209,7 +209,15 @@ def to_record(raw: RawIncentive) -> IncentiveRecord:
     if _is_evergreen(valid_until):
         valid_until = "Ongoing"
     elif valid_until == "Unknown":
-        review_reasons.append("expiry unknown")
+        # State / county / city / utility programs are typically perpetual
+        # until funding runs out; "Unknown" expiry is the norm and shouldn't
+        # automatically force a review. Federal credits, by contrast, have
+        # statutory sunsets that the page usually states explicitly — so a
+        # missing expiry there is a real anomaly worth flagging.
+        if raw.level == Level.federal:
+            review_reasons.append("expiry unknown")
+        else:
+            valid_until = "Ongoing"
     link = _program_link(raw)
     if not link:
         review_reasons.append("missing link")

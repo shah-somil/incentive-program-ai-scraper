@@ -97,6 +97,13 @@ class RawIncentive(BaseModel):
     eligible_property_types: List[str] = Field(default_factory=list)
     eligible_project_types: List[str] = Field(default_factory=list)
     zip_codes: List[str] = Field(default_factory=list)
+
+    @field_validator("eligible_property_types", "eligible_project_types", "zip_codes", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        # LLMs frequently return null for unset list fields even when the
+        # schema requests an array. Coerce to [] so the record validates.
+        return [] if v is None else v
     state: Optional[str] = "FL"
     county: Optional[str] = None
     city: Optional[str] = None
@@ -113,10 +120,8 @@ class RawIncentive(BaseModel):
     last_verified_at: Optional[str] = None
     confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     active: bool = True
-    # Provenance of this record: which extraction path produced it.
-    # Values: "curated" (hand-typed catalog), "live_html" (regex/HTML parser
-    # on a live page), "live_api" (live API call), "llm" (LLM-parsed page),
-    # or "unknown".
+    # Provenance: which extraction path produced this record.
+    # Values: "llm" (LLM-parsed page) or "unknown".
     extraction_source: str = "unknown"
 
     @field_validator("program_name")

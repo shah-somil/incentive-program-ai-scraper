@@ -1,32 +1,40 @@
-"""Prompt templates for LLM-based incentive extraction.
-
-Mirrors the template in brief Section 14.3.
-"""
+"""Prompt templates for LLM-based incentive extraction."""
 
 from __future__ import annotations
 
 
 SYSTEM_PROMPT = (
-    "You are a structured data extraction specialist. Extract incentive program "
-    "details from the provided content and return JSON that matches the schema "
-    "exactly. Only extract information explicitly stated in the content. If a "
-    "field is not mentioned, return null for that field. Never infer or assume "
-    "values. Do not hallucinate amounts, deadlines, or eligibility criteria. "
-    "Treat ambiguous wording conservatively and lower the confidence score."
+    "You are a structured data extraction specialist for property-improvement "
+    "incentive programs (rebates, tax credits, grants, financing, exemptions). "
+    "Extract every distinct program described in the provided page content. "
+    "Only use information explicitly stated in the content. If a field is not "
+    "mentioned, return null. Never infer amounts, deadlines, or eligibility. "
+    "If the page does not describe any concrete incentive program (e.g. a "
+    "navigation landing page or generic blog post), return an empty array. "
+    "Lower confidence_score whenever wording is ambiguous."
 )
 
 
-USER_PROMPT_TEMPLATE = """Extract every distinct incentive program described in the
-following content scraped from {source_url}.
+USER_PROMPT_TEMPLATE = """Extract every incentive program described on this page.
 
 Source name: {source_name}
+Source URL: {source_url}
 Content type: {content_type}
+Known jurisdiction level: {level}
+Known jurisdiction: {jurisdiction}
+Known state: {state}
+Known county: {county}
+Known city: {city}
+Known utility: {utility}
 
-Return a JSON object with key "programs" whose value is an array. Each array
-element must match the IncentiveSchema schema enforced via response_format.
-For every program include a confidence_score between 0.0 and 1.0 reflecting
-how certain you are about the extracted values. If the page is not actually an
-incentive program (e.g. a generic blog post), return an empty array.
+Use the jurisdiction hints above to populate the level / state / county / city /
+utility_provider fields when the page itself does not restate them. Do not
+override these hints with contradictory values invented from generic page text.
+
+Return a JSON object with key "programs" whose value is an array. Each element
+must match the IncentivesExtraction schema enforced via response_format. If the
+page lists multiple distinct programs, return one element per program. If the
+page is not actually about an incentive program, return an empty array.
 
 CONTENT TO EXTRACT FROM:
 ---
@@ -35,10 +43,6 @@ CONTENT TO EXTRACT FROM:
 """
 
 
-# JSON schema used with OpenAI structured outputs.  We keep it deliberately
-# permissive so the model never has to choose between "be wrong" and "fail to
-# return JSON".  All strings/numbers are nullable; downstream Pydantic
-# validation re-enforces stricter rules where it can.
 RESPONSE_JSON_SCHEMA: dict = {
     "name": "IncentivesExtraction",
     "schema": {
@@ -78,6 +82,10 @@ RESPONSE_JSON_SCHEMA: dict = {
                                 None,
                             ],
                         },
+                        "state": {"type": ["string", "null"]},
+                        "county": {"type": ["string", "null"]},
+                        "city": {"type": ["string", "null"]},
+                        "utility_provider": {"type": ["string", "null"]},
                         "amount_type": {
                             "type": ["string", "null"],
                             "enum": [

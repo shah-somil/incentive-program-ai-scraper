@@ -119,8 +119,10 @@ SOURCES: List[Source] = [
         timeout_ms=60_000,
     ),
     Source(
-        name="VA — Energy Efficient Mortgage",
-        url="https://www.va.gov/housing-assistance/home-loans/loan-types/energy-efficient-mortgage/",
+        # The standalone EEM page was retired (404 as of 2026); loan-type hub
+        # documents energy-related improvements under VA-backed loans.
+        name="VA — Home Loans (includes energy-efficient improvements)",
+        url="https://www.va.gov/housing-assistance/home-loans/loan-types/",
         level="federal",
         render="js",
         wait_selector="main",
@@ -169,6 +171,24 @@ SOURCES: List[Source] = [
     Source(
         name="Florida PACE Funding Agency",
         url="https://www.floridapace.gov/",
+        level="state",
+    ),
+    Source(
+        name="Ygrene — Residential PACE",
+        url="https://ygrene.com/",
+        level="state",
+    ),
+    Source(
+        # renewpace.com redirects to Renew Financial; root often 403 to bots.
+        name="RenewPACE (Renew Financial)",
+        url="https://renewfinancial.com/welcome-renewpace",
+        level="state",
+        render="js",
+        wait_selector="main",
+    ),
+    Source(
+        name="FRED — Florida Resiliency & Energy District (PACE)",
+        url="https://www.flcpace.org/",
         level="state",
     ),
 

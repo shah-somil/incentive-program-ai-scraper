@@ -93,7 +93,8 @@ class PoliteSession:
 
         try:
             resp = self._do_request("HEAD", url, allow_redirects=True, timeout=10)
-            if 200 <= resp.status_code < 400:
+            if 200 <= resp.status_code < 400 or resp.status_code == 403:
+                # 403 = bot wall; page exists but blocks automated HEAD.
                 return True
             if not allow_get_fallback:
                 return False
@@ -103,9 +104,9 @@ class PoliteSession:
                 return False
         # Fallback: range-limited GET
         try:
-            resp = self._do_request("GET", url, allow_redirects=True, timeout=15,
+            resp = self._do_request("GET", url, allow_redirects=True, timeout=30,
                                     headers={"Range": "bytes=0-1023"})
-            return 200 <= resp.status_code < 400
+            return 200 <= resp.status_code < 400 or resp.status_code == 403
         except requests.RequestException:  # pragma: no cover - network
             return False
 

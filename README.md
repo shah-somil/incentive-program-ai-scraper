@@ -39,7 +39,7 @@ five steps, no exceptions. Adding a new source means adding one entry to
 
 ```mermaid
 flowchart TD
-    A[sources.py<br/>~28 URLs with jurisdiction hints] --> B
+    A[sources.py<br/>31 URLs with jurisdiction hints] --> B
     B[extractors/fetch.py<br/>HTTP → PDF / HTML / JS auto-detect] --> C
     C[parsers/llm_parser.py<br/>OpenAI structured output → RawIncentive list] --> D
     D[schema.py — Pydantic validation<br/>drops malformed records] --> E
@@ -97,9 +97,8 @@ them up front:
 Every row's `program_links` column is the URL the LLM read to produce that
 row, and every record carries `extraction_source = "llm"` for provenance.
 There is no curated baseline anymore — the previous `scrapers/_curated.py`
-and `scrapers/_curated_expanded.py` files have been removed, and so has
-the `--disable-curated` CLI flag (no longer meaningful when nothing is
-curated).
+and `scrapers/_curated_expanded.py` files have been removed. Source
+selection is documented in [`docs/SOURCE_SELECTION.md`](docs/SOURCE_SELECTION.md).
 
 If a row looks wrong, click the link in `program_links` to see exactly the
 page the LLM read.
@@ -248,6 +247,19 @@ resources/                        the original brief + extraction spec
 - `program_name` is non-empty.
 - `updated_at` is ISO format.
 - Total records ≥ 60.
+
+## Extended documentation
+
+- [`docs/PIPELINE.md`](docs/PIPELINE.md) — end-to-end workflow, CSV column
+  provenance, fetch strategies, and how to debug a bad row.
+- [`docs/SOURCE_SELECTION.md`](docs/SOURCE_SELECTION.md) — how `sources.py`
+  was chosen vs. the kickoff brief, P0/P1/P2 mapping, and review cadence.
+
+Validate configured source URLs:
+
+```bash
+PYTHONPATH=src python scripts/validate_sources.py
+```
 
 ## Reference materials
 

@@ -20,6 +20,7 @@ from .schema import (
     RawType,
     today_iso,
 )
+from .url_utils import resolve_program_link
 
 LOGGER = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ def _resolve_incentive_type(raw: RawIncentive) -> Optional[IncentiveType]:
 
 
 def _program_link(raw: RawIncentive) -> str:
-    return (raw.application_url or raw.source_url or "").strip()
+    return resolve_program_link(raw.application_url, raw.source_url)
 
 
 # ---------------------------------------------------------------------------
